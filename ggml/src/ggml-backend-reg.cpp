@@ -78,6 +78,19 @@
 #include "ggml-cann.h"
 #endif
 
+#ifdef GGML_USE_RKNPU2
+#include "ggml-rknpu2.h"
+#endif
+
+// disable C++17 deprecation warning for std::codecvt_utf8
+#if defined(__clang__)
+#    pragma clang diagnostic push
+#    pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(__GNUC__)
+#    pragma GCC diagnostic push
+#    pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
 #ifdef GGML_USE_ZENDNN
 #include "ggml-zendnn.h"
 #endif
@@ -163,6 +176,9 @@ struct ggml_backend_registry {
 #endif
 #ifdef GGML_USE_CPU
         register_backend(ggml_backend_cpu_reg());
+#endif
+#ifdef GGML_USE_RKNPU2
+        register_backend(ggml_backend_rknpu2_reg());
 #endif
     }
 
