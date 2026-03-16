@@ -88,22 +88,22 @@ static std::vector<MatrixSegment> compute_matrix_segments(int N, int num_cores, 
 
     int base_segment_size = (N / num_cores / alignment) * alignment;
     int remaining = N - (base_segment_size * num_cores);
-    
+
     int offset = 0;
     for (int i = 0; i < num_cores; i++) {
         MatrixSegment seg;
         seg.offset_n = offset;
         seg.size_n = base_segment_size;
         seg.core_id = i;
-        
+
         if (i < remaining / alignment) {
             seg.size_n += alignment;
         }
-        
+
         offset += seg.size_n;
         segments.push_back(seg);
     }
-    
+
     return segments;
 }
 
@@ -130,6 +130,9 @@ struct rknpu_matmul_context {
     rknn_matmul_ctx ctx = 0;
 
     rknpu_matmul_context(int M, int K, int N, rknn_matmul_type type) {
+        if (M <= 0 || K <= 0 || N <= 0) {
+            return;
+        }
         memset(&info, 0, sizeof(info));
         info.M = M;
         info.K = K;
@@ -292,8 +295,10 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         const ggml_type w_type = src0->type;
 
         const int M = (int)src1->ne[1];
+        if (M <= 0) continue;
         const int K = (int)src0->ne[0];
         const int N = (int)src0->ne[1];
+        if (K <= 0 || N <= 0) continue;
 
         const bool is_q4_hadamard = (src0->type == GGML_TYPE_Q4_0);
         const int K_op = is_q4_hadamard ? rknpu2_calibration::next_power_of_two(K) : K;
@@ -350,7 +355,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                         auto& matmul_ctx = matmul_ctxs[i];
                         size_t segment_size_bytes = matmul_ctx->io_attr.B.size;
                         size_t total_offset = src0_base_offset_in_dma + current_offset_in_tensor;
-                        
+
                         auto cache_key = std::make_pair(src0_buffer, total_offset);
                         std::lock_guard<std::mutex> lock(backend_ctx->mutex);
                         auto it = backend_ctx->b_mem_handle_cache.find(cache_key);
@@ -471,7 +476,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // ===========================================
         // ========== 4. Preparing C-matrix ==========
         // ===========================================
-        {            
+        {
             for (size_t i = 0; i < num_active_segments; i++) {
                 auto& matmul_ctx = matmul_ctxs[i];
                 auto cache_key = std::make_tuple(M, active_segments[i].size_n, active_segments[i].core_id);
@@ -484,12 +489,12 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // ==========================================
         // ========== 5. Running operation ==========
         // ==========================================
-        {            
+        {
             #pragma omp parallel for num_threads(num_active_segments)
             for (size_t i = 0; i < num_active_segments; i++) {
                 int ret = rknn_matmul_run(matmul_ctxs[i]->ctx);
                 if (ret != RKNN_SUCC) {
-                    // Handle error
+                    fprintf(stderr, "RKNPU ERROR [run matmul core %d]: %d\n", active_segments[i].core_id, ret);
                 }
             }
         }
@@ -499,7 +504,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // ===========================================
         {
             float* dst_data = (float*)dst->data;
-            
+
             for (size_t i = 0; i < num_active_segments; i++) {
                 RKNN_CHECK(rknn_mem_sync(matmul_ctxs[i]->ctx, mem_C_segments[i].get(), RKNN_MEMORY_SYNC_FROM_DEVICE), "sync C FROM_DEVICE");
             }
@@ -548,7 +553,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                         }
                         break;
                     }
-                    
+
                     default:
                         // This should not be reached if config is correct
                         break;
@@ -705,7 +710,7 @@ static void ggml_backend_rknpu_buffer_set_tensor(ggml_backend_buffer_t buffer, s
                 for (int n = 0; n < N; ++n) {
                     const float* src_row = dequantized_data.data() + (size_t)n * K;
                     float* dst_row_rot = rotated_b_fp32.data() + (size_t)n * padded_K;
-                    
+
                     std::vector<float> signed_row(K);
                     for(int k=0; k<K; ++k) signed_row[k] = src_row[k] * s_vec[k];
 
@@ -993,7 +998,7 @@ static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t 
     if (!rknpu2_configuration::Rknpu2ConfigManager::get_instance().select_device("RK3588")) return NULL;
 
     ggml_backend_rknpu_context * ctx = new ggml_backend_rknpu_context();
-    
+
     static const struct ggml_backend_i rknpu_backend_interface = {
         /* .get_name           = */ ggml_backend_rknpu_name,
         /* .free               = */ ggml_backend_rknpu_free,
@@ -1041,7 +1046,7 @@ static ggml_backend_dev_t ggml_backend_rknpu_reg_get_device(ggml_backend_reg_t r
     if (index != 0) {
         return NULL;
     }
-    
+
     static const struct ggml_backend_buffer_type_i rknpu_buffer_type_interface = {
         /* .get_name       = */ ggml_backend_rknpu_buffer_type_get_name,
         /* .alloc_buffer   = */ ggml_backend_rknpu_buffer_type_alloc_buffer,
@@ -1080,7 +1085,7 @@ static ggml_backend_dev_t ggml_backend_rknpu_reg_get_device(ggml_backend_reg_t r
         /* .reg     = */ reg,
         /* .context = */ NULL,
     };
-    
+
     if (rknpu_buffer_type.device == NULL) {
         rknpu_buffer_type.device = &rknpu_device;
     }
